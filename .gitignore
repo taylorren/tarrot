@@ -1,0 +1,16 @@
+# secrets
+.env
+.env.local
+
+# build output
+dist/
+
+# usage logs (your private analytics)
+logs/
+
+# deps
+node_modules/
+
+# misc
+.DS_Store
+npm-debug.log*
