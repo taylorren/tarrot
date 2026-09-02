@@ -37,7 +37,7 @@ const a11yLabel = computed(() =>
       @click="emit('draw', index)"
     >
       <template v-if="revealed && card">
-        <img :src="card.src" :alt="cardTitle(card) + (card.reversed ? '，逆位' : '')" />
+        <img :src="card.src" :alt="card.name + (card.reversed ? ' (reversed)' : '')" />
         <span v-if="card.reversed" class="reversed-badge" aria-hidden="true">↕ 逆位</span>
       </template>
       <template v-else>

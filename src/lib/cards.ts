@@ -1,26 +1,12 @@
 import type { Card } from './types'
+import { cardImages } from './cardImages'
 
-// [displayName, fileStem]. fileStem is used to build the asset URL.
-const DECK: [string, string][] = [
-  ['The Fool', 'The_Fool'], ['The Magician', 'The_Magician'], ['The High Priestess', 'The_High_Priestess'],
-  ['The Empress', 'The_Empress'], ['The Emperor', 'The_Emperor'], ['The Hierophant', 'The_Hierophant'],
-  ['The Lovers', 'The_Lovers'], ['The Chariot', 'The_Chariot'], ['Strength', 'Strength'],
-  ['The Hermit', 'The_Hermit'], ['Wheel of Fortune', 'Wheel_of_Fortune'], ['Justice', 'Justice'],
-  ['The Hanged Man', 'The_Hanged_Man'], ['Death', 'Death'], ['Temperance', 'Temperance'],
-  ['The Devil', 'The_Devil'], ['The Tower', 'The_Tower'], ['The Star', 'The_Star'],
-  ['The Moon', 'The_Moon'], ['The Sun', 'The_Sun'], ['Judgement', 'Judgement'], ['The World', 'The_World'],
-  ...(['Wands', 'Cups', 'Swords', 'Pentacles'] as const).flatMap((suit) =>
-    (['Ace', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Page', 'Knight', 'Queen', 'King'] as const).map((rank): [string, string] => [
-      `${rank} of ${suit}`,
-      rank === 'Ace' ? 'Ace' : `${rank}_of_${suit}`,
-    ]),
-  ),
-]
-
-export const cards: Card[] = DECK.map(([name, file]) => ({
-  name,
-  file,
-  src: `cards/${file}_(Rider-Waite_Smith_tarot_deck).png`,
+// The deck is ordered by its flat index (0..77), which matches the
+// auto-generated cardImages mapping and the server knowledge base.
+export const cards: Card[] = cardImages.map((ci) => ({
+  name: ci.name,
+  index: ci.index,
+  src: ci.src,
 }))
 
 const majorTitles: Record<string, string> = {
@@ -45,8 +31,8 @@ export function cardTitle(card: Pick<Card, 'name'>): string {
  * table. Called at the moment the user flips a card — nothing about the
  * reading exists before the user acts.
  */
-export function drawOne(exclude: string[]): Card {
-  const pool = cards.filter((c) => !exclude.includes(c.name))
+export function drawOne(excludeIndexes: number[]): Card {
+  const pool = cards.filter((c) => !excludeIndexes.includes(c.index))
   const card = pool[Math.floor(Math.random() * pool.length)]
   return { ...card, reversed: Math.random() < 0.5 }
 }

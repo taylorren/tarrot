@@ -2,13 +2,14 @@
 
 export interface Card {
   name: string
-  file: string
+  index: number
   src: string
   reversed?: boolean
 }
 
 /** A picked card in its position, ready to send to the AI. */
 export interface AskedCard {
+  index: number
   name: string
   reversed: boolean
   position: number

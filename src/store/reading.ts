@@ -42,8 +42,13 @@ function restoreSavedReading(q: Quota) {
   try {
     const saved = JSON.parse(localStorage.getItem(READING_STORAGE_KEY) || '') as SavedReading
     if (saved.resetAt !== q.resetAt || !Array.isArray(saved.cards) || saved.cards.length !== 3) return false
+    const resolved = saved.cards.map((c) => {
+      const card = deck.find((d) => d.index === c.index) ?? deck.find((d) => d.name === c.name)
+      return card ? { ...card, reversed: c.reversed } : null
+    })
+    if (resolved.some((card) => card === null)) return false
     questionText.value = saved.question
-    chosen.value = saved.cards
+    chosen.value = resolved as Card[]
     drawn.value = saved.cards.length
     aiReading.value = saved.reading
     aiThread.value = saved.thread
@@ -84,7 +89,7 @@ async function resumePreviousReading() {
       .slice()
       .sort((first, second) => first.position - second.position)
       .map((asked) => {
-        const card = deck.find((candidate) => candidate.name === asked.name)
+        const card = deck.find((candidate) => candidate.index === asked.index) ?? deck.find((candidate) => candidate.name === asked.name)
         return card ? { ...card, reversed: asked.reversed } : null
       })
     if (restoredCards.some((card) => card === null) || restoredCards.length !== 3) return false
@@ -115,7 +120,7 @@ function requestReading() {
   // Only called after all 3 cards are drawn — filter is order-preserving here.
   const cards = chosen.value
     .filter((c): c is Card => c !== null)
-    .map((c, i) => ({ name: c.name, reversed: !!c.reversed, position: i }))
+    .map((c, i) => ({ index: c.index, name: c.name, reversed: !!c.reversed, position: i }))
   const p = fetchReading(q, cards, abort.signal)
   pending = p
   return p
@@ -136,7 +141,7 @@ function start(question: string) {
 
 function drawCard(index: number) {
   if (index !== drawn.value || index >= chosen.value.length) return
-  const taken = chosen.value.filter((c): c is Card => c !== null).map((c) => c.name)
+  const taken = chosen.value.filter((c): c is Card => c !== null).map((c) => c.index)
   chosen.value[index] = drawOne(taken) // drawn at the moment of the flip
   drawn.value++
   if (drawn.value >= chosen.value.length) showAi()

@@ -18,6 +18,7 @@ const ROOT = path.join(__here, '..');
 const DIST = path.join(ROOT, 'dist');
 const PORT = process.env.PORT || 8787;
 const OLLAMA_CHAT = 'https://ollama.com/api/chat';
+const TAROT_KNOWLEDGE_PATH = path.join(__here, 'tarot-knowledge.json');
 
 // ---- Minimal .env loader (no dependencies) -------------------------------
 function loadEnv() {
@@ -41,6 +42,7 @@ const API_KEY = process.env.OLLAMA_API_KEY || '';
 const MODEL = (process.env.OLLAMA_MODEL || 'gpt-oss:20b').replace(/-cloud$/, '');
 const HAS_DIST = fs.existsSync(path.join(DIST, 'index.html'));
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const TAROT_KNOWLEDGE = JSON.parse(fs.readFileSync(TAROT_KNOWLEDGE_PATH, 'utf8'));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -197,9 +199,13 @@ function serveStatic(req, res, urlPath) {
 // ---- Ollama cloud call (non-streaming, forced JSON) ----------------------
 function buildMessages({ question, cards }) {
   const positions = ['此刻的真实', '需要照看的事', '向前的一种方式'];
-  const spread = (Array.isArray(cards) ? cards : []).map((c, i) => {
-    const orientation = c.reversed ? '逆位' : '正位';
-    return `${i + 1}. ${positions[i] || '第' + (i + 1) + '张'} —— ${c.name}（${orientation}）`;
+  const spread = (Array.isArray(cards) ? cards : []).map((card, i) => {
+    const orientation = card.reversed ? '逆位' : '正位';
+    const knowledge = TAROT_KNOWLEDGE[card.name];
+    const meaning = knowledge
+      ? `\n   参考关键词：${knowledge.keywords.join('、')}\n   ${orientation}参考：${card.reversed ? knowledge.reversed : knowledge.upright}`
+      : '';
+    return `${i + 1}. ${positions[i] || '第' + (i + 1) + '张'} —— ${card.name}（${orientation}）${meaning}`;
   }).join('\n');
 
   const system =
@@ -207,6 +213,10 @@ function buildMessages({ question, cards }) {
     '你不做算命预言，而是帮助提问者对眼前的处境获得更清晰、更有力量的角度。' +
     '语气安静、具体、有温度。请把三张牌视为一个整体来回应问题本身，' +
     '而不是逐张孤立讲解；注意每张牌的正位/逆位，并把它们的含义真正联系起来。' +
+    '牌阵中会提供牌义参考，请以它为基础进行综合，不要逐字复述或逐张列出。' +
+    '不要虚构牌面图像、场景、人物、物件或象征细节；除牌名外，不要描述牌面。' +
+    '不要把牌义写成确定的事实、预言，或把提问者置于未经其提供的具体场景中。' +
+    '不要重复问题，不要用“第一张”“第二张”“第三张”依次讲牌。' +
     '请严格输出 JSON 对象，只有两个字段：\n' +
     '1. "reading"：一段约 120–180 字的解读，把问题与三张牌连成一条连贯的线索，' +
     '点出正在发生的、需要照看的地方，以及一种向前的方式；\n' +
@@ -257,8 +267,8 @@ function callOllama(messages) {
 // Strip markdown fences, then parse the JSON the model was asked to return.
 function parseInsight(content) {
   const cleaned = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
-  try { return JSON.parse(cleaned); } catch (_) { /* fall through */ }
-  return { reading: cleaned, thread: '' };
+  try { return { ...JSON.parse(cleaned), validJson: true }; } catch (_) { /* fall through */ }
+  return { reading: cleaned, thread: '', validJson: false };
 }
 
 async function handleReading(req, res) {
@@ -300,9 +310,15 @@ async function handleReading(req, res) {
     const reading = (insight.reading || '').trim();
     const thread = (insight.thread || '').trim();
     const cards = (Array.isArray(payload?.cards) ? payload.cards : []).map((card, position) => ({
+      index: Number.isInteger(card?.index) ? card.index : undefined,
       name: String(card?.name || ''),
       reversed: !!card?.reversed,
       position,
+    }));
+    const grounding = cards.map((card) => ({
+      name: card.name,
+      orientation: card.reversed ? 'reversed' : 'upright',
+      knowledgeFound: !!TAROT_KNOWLEDGE[card.name],
     }));
     const completedReading = {
       completedAt,
@@ -323,7 +339,18 @@ async function handleReading(req, res) {
       promptTokens: raw.prompt_eval_count ?? null,
       completionTokens: raw.eval_count ?? null,
       cooldownHours: COOLDOWN_HOURS,
+      grounding,
+      validJson: insight.validJson,
+      readingLength: reading.length,
+      threadLength: thread.length,
     });
+    console.info('[reading]', JSON.stringify({
+      model: MODEL,
+      grounding,
+      validJson: insight.validJson,
+      readingLength: reading.length,
+      threadLength: thread.length,
+    }));
     return send(res, 200, JSON.stringify({
       reading,
       thread,

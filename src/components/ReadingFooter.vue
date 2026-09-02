@@ -36,5 +36,8 @@ async function onCopy() {
       复制整份解读 <span>↗</span>
     </button>
     <p class="footer-hint">含你的问题、三张牌、提醒与 AI 解读</p>
+    <p class="source-credit">
+      牌义参考 <a href="https://github.com/coderdoder-mode/Mystic" target="_blank" rel="noreferrer">Mystic</a>（MIT）
+    </p>
   </footer>
 </template>

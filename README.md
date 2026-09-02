@@ -97,6 +97,13 @@ npm run type-check   # vue-tsc
 重启用日志恢复最近一次成功解读时间，所以冷却不会因为重启而失效。看数时最值得盯的是
 `promptTokens + completionTokens`（你真实的成本）和 `cooldown` 数量。
 
+## AI 牌义参考
+
+服务端的 `server/tarot-knowledge.json` 包含完整 78 张牌的关键词、正位与逆位英文参考，
+每次只向模型提供本次抽到的三张牌。数据来自
+[coderdoder-mode/Mystic](https://github.com/coderdoder-mode/Mystic)，采用 MIT 许可证；
+原始文件、许可证和归属说明保存在 `server/third-party/`。中文的三牌整合、语气与安全边界由本项目定义。
+
 ## API
 
 `POST /api/reading`，请求体：
