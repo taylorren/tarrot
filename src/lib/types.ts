@@ -20,6 +20,14 @@ export interface ReadingResponse {
   quota?: Quota
 }
 
+export interface PreviousReadingResponse {
+  question: string
+  cards: AskedCard[]
+  reading: string
+  thread: string
+  quota: Quota
+}
+
 export interface Quota {
   used: number
   limit: number | null

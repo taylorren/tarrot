@@ -56,8 +56,8 @@ const stateIcon = computed(() => ({
         <strong>今天就做的一小步：</strong><span>{{ aiThread }}</span>
       </p>
       <p v-if="aiStage === 'quota'" class="ai-quota">
-        今天的解读次数已经用完了。上面的牌与那句提醒仍在——
-        明天这个时候，再回来让牌面继续说话。
+        这次解读刚刚落下。上面的牌与那句提醒仍在——
+        四小时后，再带着新的问题回来。
       </p>
     </div>
 

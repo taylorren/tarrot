@@ -92,48 +92,68 @@ function getClientId(req, res) {
   return id;
 }
 
-/** Never store raw IPs — hash them. Enough to count unique visitors per day. */
+/** Never store raw IPs — hash them. Enough to distinguish anonymous clients. */
 function ipHash(req) {
   const ip = (req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
   return crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16);
 }
 
-// ---- Daily quota ----------------------------------------------------------
-const QUOTA_LIMIT = Number(process.env.DAILY_LIMIT || 3);
+// ---- Reading cooldown -----------------------------------------------------
+const COOLDOWN_HOURS = Number(process.env.READING_COOLDOWN_HOURS || 4);
+const COOLDOWN_MS = COOLDOWN_HOURS * 60 * 60 * 1000;
 
-function quotaSnapshot(used, resetAt) {
-  return { used, limit: IS_PRODUCTION ? QUOTA_LIMIT : null, resetAt };
-}
-
-/** Local-day key for the client (browser sends its timezone offset in minutes). */
-function localDay(tzOffsetMinutes) {
-  const tz = Number.isFinite(tzOffsetMinutes) ? tzOffsetMinutes : -new Date().getTimezoneOffset();
-  const shifted = new Date(Date.now() - tz * 60000);
+function quotaSnapshot(lastReadingAt) {
+  const resetAt = lastReadingAt + COOLDOWN_MS;
+  const coolingDown = Date.now() < resetAt;
   return {
-    day: shifted.toISOString().slice(0, 10),
-    resetAt: Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) + 86400000 + tz * 60000,
+    used: coolingDown ? 1 : 0,
+    limit: IS_PRODUCTION ? 1 : null,
+    resetAt: coolingDown ? resetAt : 0,
   };
 }
 
-// Usage index: clientId -> Map(day -> successful count). The JSONL log is the
-// source of truth; this index is rebuilt from it on boot and updated in memory.
+// Latest complete reading per client. The JSONL log is the source of truth;
+// this index is rebuilt from it on boot and updated in memory.
+// Complete readings exist only while their cooldown is active, so the user can
+// reopen the prior reading without creating a long-term personal-data archive.
 const LOG_DIR = path.join(ROOT, 'logs');
-const usageIndex = new Map();
+const ACTIVE_READINGS_PATH = path.join(LOG_DIR, 'active-readings.json');
+const lastReadingIndex = new Map();
 
-function loadUsage() {
+function isActiveReading(reading) {
+  return reading && Date.now() < reading.completedAt + COOLDOWN_MS;
+}
+
+function saveActiveReadings() {
   try {
-    for (const file of fs.readdirSync(LOG_DIR)) {
-      if (!file.startsWith('usage-') || !file.endsWith('.jsonl')) continue;
-      for (const line of fs.readFileSync(path.join(LOG_DIR, file), 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const rec = JSON.parse(line);
-          if (rec.status !== 'ok' || !rec.clientId || !rec.day) continue;
-          if (!usageIndex.has(rec.clientId)) usageIndex.set(rec.clientId, new Map());
-          const days = usageIndex.get(rec.clientId);
-          days.set(rec.day, (days.get(rec.day) || 0) + 1);
-        } catch (_) { /* skip malformed line */ }
-      }
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.writeFileSync(ACTIVE_READINGS_PATH, JSON.stringify(Object.fromEntries(lastReadingIndex)));
+  } catch (err) {
+    console.error('[active readings]', err.message);
+  }
+}
+
+function pruneExpiredReadings() {
+  let changed = false;
+  for (const [clientId, reading] of lastReadingIndex) {
+    if (!isActiveReading(reading)) {
+      lastReadingIndex.delete(clientId);
+      changed = true;
+    }
+  }
+  if (changed) saveActiveReadings();
+}
+
+function loadActiveReadings() {
+  try {
+    const stored = JSON.parse(fs.readFileSync(ACTIVE_READINGS_PATH, 'utf8'));
+    for (const [clientId, reading] of Object.entries(stored)) {
+      if (
+        typeof reading?.completedAt !== 'number' || typeof reading.question !== 'string' ||
+        !Array.isArray(reading.cards) || reading.cards.length !== 3 ||
+        typeof reading.reading !== 'string' || typeof reading.thread !== 'string'
+      ) continue;
+      if (isActiveReading(reading)) lastReadingIndex.set(clientId, reading);
     }
   } catch (_) { /* no logs yet */ }
 }
@@ -142,22 +162,18 @@ function appendLog(record) {
   try {
     fs.mkdirSync(LOG_DIR, { recursive: true });
     const month = record.ts.slice(0, 7);
-    fs.appendFileSync(path.join(LOG_DIR, `usage-${month}.jsonl`), JSON.stringify(record) + '\n');
+    fs.appendFileSync(path.join(LOG_DIR, `usage-${month}.jsonl`), JSON.stringify({ ...record, environment: IS_PRODUCTION ? 'production' : 'development' }) + '\n');
   } catch (err) {
     console.error('[log]', err.message);
   }
 }
 
-function quotaFor(clientId, day) {
-  return usageIndex.get(clientId)?.get(day) || 0;
+function lastReadingFor(clientId) {
+  return lastReadingIndex.get(clientId) || null;
 }
-
-function recordUsage(clientId, day, delta = 1) {
-  if (!usageIndex.has(clientId)) usageIndex.set(clientId, new Map());
-  const days = usageIndex.get(clientId);
-  days.set(day, (days.get(day) || 0) + delta);
-}
-loadUsage();
+loadActiveReadings();
+pruneExpiredReadings();
+setInterval(pruneExpiredReadings, 60_000).unref();
 
 // ---- Static serving (production only) ------------------------------------
 function serveStatic(req, res, urlPath) {
@@ -251,15 +267,15 @@ async function handleReading(req, res) {
   try { payload = JSON.parse(await readBody(req)); }
   catch (_) { return send(res, 400, JSON.stringify({ error: 'Invalid JSON body' })); }
 
-  const { day, resetAt } = localDay(payload?.tzOffset);
-  const used = quotaFor(clientId, day);
+  const previousReading = lastReadingFor(clientId);
+  const quota = quotaSnapshot(previousReading?.completedAt || 0);
 
   // Server-side gate — the client's localStorage check is only a convenience.
-  if (IS_PRODUCTION && used >= QUOTA_LIMIT) {
-    appendLog({ ts: new Date().toISOString(), day, status: 'limit_reached', clientId, ipHash: ipHash(req), used });
+  if (IS_PRODUCTION && quota.used >= quota.limit) {
+    appendLog({ ts: new Date().toISOString(), status: 'cooldown', clientId, ipHash: ipHash(req), resetAt: quota.resetAt });
     return send(res, 429, JSON.stringify({
-      error: '今天的解读次数已经用完了。明天这个时候再来，让牌面也休息一下。',
-      quota: quotaSnapshot(used, resetAt),
+      error: '这次解读刚刚落下，四小时后再带着新的问题回来吧。',
+      quota,
     }));
   }
 
@@ -273,47 +289,56 @@ async function handleReading(req, res) {
     // the AI was generating, they never saw a reading — don't deduct.
     if (res.writableEnded || res.destroyed) {
       appendLog({
-        ts: new Date().toISOString(), day, status: 'abandoned', clientId, ipHash: ipHash(req),
-        model: MODEL, latencyMs: Date.now() - startedAt, used, limit: QUOTA_LIMIT,
+        ts: new Date().toISOString(), status: 'abandoned', clientId, ipHash: ipHash(req),
+        model: MODEL, latencyMs: Date.now() - startedAt,
       });
       return;
     }
 
     const insight = parseInsight(content);
-    recordUsage(clientId, day);
+    const completedAt = Date.now();
+    const reading = (insight.reading || '').trim();
+    const thread = (insight.thread || '').trim();
+    const cards = (Array.isArray(payload?.cards) ? payload.cards : []).map((card, position) => ({
+      name: String(card?.name || ''),
+      reversed: !!card?.reversed,
+      position,
+    }));
+    const completedReading = {
+      completedAt,
+      question: String(payload?.question || '').slice(0, 200),
+      cards,
+      reading,
+      thread,
+    };
+    lastReadingIndex.set(clientId, completedReading);
+    saveActiveReadings();
     appendLog({
-      ts: new Date().toISOString(),
-      day,
+      ts: new Date(completedAt).toISOString(),
       status: 'ok',
       clientId,
       ipHash: ipHash(req),
-      question: String(payload?.question || '').slice(0, 200),
-      cards: (Array.isArray(payload?.cards) ? payload.cards : []).map((c) => `${c.name}${c.reversed ? '(R)' : ''}`),
       model: MODEL,
       latencyMs: Date.now() - startedAt,
       promptTokens: raw.prompt_eval_count ?? null,
       completionTokens: raw.eval_count ?? null,
-      used: used + 1,
-      limit: QUOTA_LIMIT,
+      cooldownHours: COOLDOWN_HOURS,
     });
     return send(res, 200, JSON.stringify({
-      reading: (insight.reading || '').trim(),
-      thread: (insight.thread || '').trim(),
-      quota: quotaSnapshot(used + 1, resetAt),
+      reading,
+      thread,
+      quota: quotaSnapshot(completedAt),
     }));
   } catch (err) {
     // Failed calls cost nothing and don't consume quota — but log them.
     appendLog({
       ts: new Date().toISOString(),
-      day,
       status: 'error',
       clientId,
       ipHash: ipHash(req),
       model: MODEL,
       latencyMs: Date.now() - startedAt,
       detail: String(err.message || err).slice(0, 200),
-      used,
-      limit: QUOTA_LIMIT,
     });
     console.error('[reading]', err.message);
     return send(res, 502, JSON.stringify({ error: 'AI 暂时没有回应。请稍后再试。', detail: String(err.message || err) }));
@@ -323,10 +348,23 @@ async function handleReading(req, res) {
 // Lightweight pre-flight check — never consumes quota, never calls Ollama.
 function handleQuota(req, res) {
   const clientId = getClientId(req, res);
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const { day, resetAt } = localDay(Number(url.searchParams.get('tz')));
-  const used = quotaFor(clientId, day);
-  return send(res, 200, JSON.stringify(quotaSnapshot(used, resetAt)));
+  return send(res, 200, JSON.stringify(quotaSnapshot(lastReadingFor(clientId)?.completedAt || 0)));
+}
+
+function handlePreviousReading(req, res) {
+  const clientId = getClientId(req, res);
+  const previousReading = lastReadingFor(clientId);
+  const quota = quotaSnapshot(previousReading?.completedAt || 0);
+  if (!previousReading || !IS_PRODUCTION || !quota.used) {
+    return send(res, 404, JSON.stringify({ error: 'No active reading' }));
+  }
+  return send(res, 200, JSON.stringify({
+    question: previousReading.question,
+    cards: previousReading.cards,
+    reading: previousReading.reading,
+    thread: previousReading.thread,
+    quota,
+  }));
 }
 
 // ---- Request router ------------------------------------------------------
@@ -334,6 +372,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (req.method === 'POST' && url.pathname === '/api/reading') return handleReading(req, res);
   if (req.method === 'GET' && url.pathname === '/api/quota') return handleQuota(req, res);
+  if (req.method === 'GET' && url.pathname === '/api/previous-reading') return handlePreviousReading(req, res);
   if ((req.method === 'GET' || req.method === 'HEAD') && !url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
   return send(res, 404, 'Not found', 'text/plain');
 });

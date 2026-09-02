@@ -68,35 +68,34 @@ npm run type-check   # vue-tsc
 > ⚠️ 维护提醒：请不要把 AI 请求提前到三张牌翻完之前——那会让用户
 > 为没有收到的解读付费，也会破坏翻牌节奏。
 
-## 每日次数与用量日志
+## 解读间隔与用量日志
 
-云端 Ollama 有配额，所以每次**成功送达的解读**计入每日限额（默认 3 次/天，
-可用环境变量 `DAILY_LIMIT` 调整）：
+云端 Ollama 有成本，所以生产环境中每次**成功送达的解读**后，需要等待 4 小时
+才能开始下一次。可用环境变量 `READING_COOLDOWN_HOURS` 调整间隔：
 
-- **服务端是真正的闸门**（`server/server.js`）：超限返回 `429`，前端显示
-  温和的"明天再见"提示（牌与手工提醒仍可看，但没有"再试一次"）。
+- **服务端是真正的闸门**（`server/server.js`）：冷却中返回 `429`，前端显示
+  温和的等待提示（牌与手工提醒仍可看，但没有"再试一次"）。
 - **身份**：匿名 cookie（`tarrot_id`，HttpOnly，1 年）；cookie 被禁时退回到
-  哈希后的 IP（SHA-256 截断，不存原始 IP）。没有账号，没有性别/年龄这类
-  个人信息。
-- **"一天"按用户本地时区计算**（浏览器随请求带上时区偏移），在用户自己的
-  午夜重置。
+  哈希后的 IP（SHA-256 截断，不存原始 IP）。没有账号，没有性别/年龄这类个人信息。
+- **冷却时间从成功送达解读时开始计算**，不会受时区或午夜边界影响。
 - **失败的调用不计次**（没有花你的配额），但也会被记录下来。
-- `GET /api/quota` 是免费预检，前端用它显示"今日还可用 x / 3 次"。
+- **解读内容保留 4 小时**：问题、牌面与 AI 解读仅保存在 `logs/active-readings.json`
+  以支持冷却期间的重读，过期后自动删除。该文件和用量日志均被 `.gitignore` 排除。
+- `GET /api/quota` 是免费预检，前端用它显示是否可开始新解读或剩余等待时间。
 
 用量日志写在 `logs/usage-YYYY-MM.jsonl`（已 gitignore，属于你的私有数据），
 每行一条 JSON，供你判断何时做免费/付费版本：
 
 ```json
-{"ts":"…","day":"2026-09-02","status":"ok","clientId":"…","ipHash":"…",
- "question":"…","cards":["The Star","The Hermit(R)"],"model":"gpt-oss:20b",
- "latencyMs":8214,"promptTokens":371,"completionTokens":966,"used":2,"limit":3}
+{"ts":"…","status":"ok","clientId":"…","ipHash":"…","model":"gpt-oss:20b",
+ "latencyMs":8214,"promptTokens":371,"completionTokens":966,"cooldownHours":4}
 ```
 
-`status` 有四种：`ok`（计次）、`error`（调用失败，不计次）、
-`limit_reached`（被 429 挡下的尝试——这是付费需求的最直接信号）、
+`status` 有四种：`ok`（开始冷却）、`error`（调用失败，不进入冷却）、
+`cooldown`（被 429 挡下的尝试——这是付费需求的最直接信号）、
 `abandoned`（AI 还没返回用户就离开了，不计次）。
-重启用日志重建计数，所以配额不会因为重启而清零。看数时最值得盯的是
-`promptTokens + completionTokens`（你真实的成本）和每天的 `limit_reached` 数量。
+重启用日志恢复最近一次成功解读时间，所以冷却不会因为重启而失效。看数时最值得盯的是
+`promptTokens + completionTokens`（你真实的成本）和 `cooldown` 数量。
 
 ## API
 

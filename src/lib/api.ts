@@ -1,11 +1,15 @@
-import { QuotaError, type AskedCard, type Quota, type ReadingResponse } from './types'
-
-/** The user's timezone offset in minutes (Date#getTimezoneOffset convention). */
-export const tzOffset = () => new Date().getTimezoneOffset()
+import { QuotaError, type AskedCard, type PreviousReadingResponse, type Quota, type ReadingResponse } from './types'
 
 /** Lightweight pre-flight check — free, never consumes quota. */
 export async function fetchQuota(): Promise<Quota> {
-  const res = await fetch(`/api/quota?tz=${tzOffset()}`)
+  const res = await fetch('/api/quota')
+  if (!res.ok) throw new Error(`请求失败 ${res.status}`)
+  return res.json()
+}
+
+/** Retrieves the completed reading that is currently protected by cooldown. */
+export async function fetchPreviousReading(): Promise<PreviousReadingResponse> {
+  const res = await fetch('/api/previous-reading')
   if (!res.ok) throw new Error(`请求失败 ${res.status}`)
   return res.json()
 }
@@ -20,12 +24,12 @@ export async function fetchReading(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
-    body: JSON.stringify({ question, cards, tzOffset: tzOffset() }),
+    body: JSON.stringify({ question, cards }),
   })
   const data = (await res.json().catch(() => ({}))) as Partial<ReadingResponse> & { error?: string }
   if (res.status === 429) {
     throw new QuotaError(
-      (data.quota as Quota) || { used: 3, limit: 3, resetAt: Date.now() + 3600_000 },
+      (data.quota as Quota) || { used: 1, limit: 1, resetAt: Date.now() + 4 * 3600_000 },
     )
   }
   if (!res.ok) throw new Error(data.error || `请求失败 ${res.status}`)

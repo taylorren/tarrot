@@ -33,8 +33,8 @@ async function onCopy() {
 <template>
   <footer class="reading-footer" id="reading-footer">
     <button id="save-note" type="button" :disabled="disabled" @click="onCopy">
-      复制这次完整解读 <span>↗</span>
+      复制整份解读 <span>↗</span>
     </button>
-    <p class="footer-hint">将上面的三张牌、一句提醒与 AI 解读一起复制。</p>
+    <p class="footer-hint">含你的问题、三张牌、提醒与 AI 解读</p>
   </footer>
 </template>

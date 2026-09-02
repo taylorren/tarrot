@@ -1,6 +1,6 @@
 import { ref } from 'vue'
-import { drawOne } from '../lib/cards'
-import { fetchReading, fetchQuota } from '../lib/api'
+import { cards as deck, drawOne } from '../lib/cards'
+import { fetchPreviousReading, fetchReading, fetchQuota } from '../lib/api'
 import { QuotaError, type AiStage, type Card, type Phase, type Quota, type ReadingResponse } from '../lib/types'
 
 // Module-level singleton store (shared by all components via useReading()).
@@ -14,19 +14,93 @@ const aiStage = ref<AiStage>('idle')
 const aiReading = ref('')
 const aiThread = ref('')
 
-// Daily allowance, refreshed from the server (never trusted from the client).
+// Reading cooldown, refreshed from the server (never trusted from the client).
 const quota = ref<Quota>({ used: 0, limit: 3, resetAt: 0 })
+const READING_STORAGE_KEY = 'tarrot:last-completed-reading'
 
 let pending: Promise<ReadingResponse> | null = null
 let abort: AbortController | null = null
+
+interface SavedReading {
+  question: string
+  cards: Card[]
+  reading: string
+  thread: string
+  resetAt: number
+}
 
 function applyQuota(q?: Quota) {
   if (q) quota.value = q
 }
 
-/** Free pre-flight so the intro screen can show today's allowance. */
+function isCoolingDown(q: Quota) {
+  return q.limit !== null && q.used >= q.limit && q.resetAt > Date.now()
+}
+
+function restoreSavedReading(q: Quota) {
+  if (!isCoolingDown(q)) return false
+  try {
+    const saved = JSON.parse(localStorage.getItem(READING_STORAGE_KEY) || '') as SavedReading
+    if (saved.resetAt !== q.resetAt || !Array.isArray(saved.cards) || saved.cards.length !== 3) return false
+    questionText.value = saved.question
+    chosen.value = saved.cards
+    drawn.value = saved.cards.length
+    aiReading.value = saved.reading
+    aiThread.value = saved.thread
+    aiStage.value = 'done'
+    phase.value = 'reading'
+    return true
+  } catch {
+    return false
+  }
+}
+
+function saveCompletedReading(q: Quota) {
+  if (q.limit === null) return
+  const saved: SavedReading = {
+    question: questionText.value,
+    cards: chosen.value.filter((card): card is Card => card !== null),
+    reading: aiReading.value,
+    thread: aiThread.value,
+    resetAt: q.resetAt,
+  }
+  localStorage.setItem(READING_STORAGE_KEY, JSON.stringify(saved))
+}
+
+/** Free pre-flight so the intro screen can show the next available reading. */
 async function refreshQuota() {
-  try { applyQuota(await fetchQuota()) } catch { /* offline — keep last known */ }
+  try {
+    const nextQuota = await fetchQuota()
+    applyQuota(nextQuota)
+  } catch { /* offline — keep last known */ }
+}
+
+async function resumePreviousReading() {
+  if (restoreSavedReading(quota.value)) return true
+  if (!isCoolingDown(quota.value)) return false
+  try {
+    const previous = await fetchPreviousReading()
+    const restoredCards = previous.cards
+      .slice()
+      .sort((first, second) => first.position - second.position)
+      .map((asked) => {
+        const card = deck.find((candidate) => candidate.name === asked.name)
+        return card ? { ...card, reversed: asked.reversed } : null
+      })
+    if (restoredCards.some((card) => card === null) || restoredCards.length !== 3) return false
+    const saved: SavedReading = {
+      question: previous.question,
+      cards: restoredCards as Card[],
+      reading: previous.reading,
+      thread: previous.thread,
+      resetAt: previous.quota.resetAt,
+    }
+    localStorage.setItem(READING_STORAGE_KEY, JSON.stringify(saved))
+    applyQuota(previous.quota)
+    return restoreSavedReading(previous.quota)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -48,6 +122,7 @@ function requestReading() {
 }
 
 function start(question: string) {
+  if (restoreSavedReading(quota.value)) return
   questionText.value = question.trim() || '此刻有什么正停留在我心里'
   chosen.value = [null, null, null] // cards are drawn at click-time
   drawn.value = 0
@@ -75,6 +150,7 @@ async function showAi() {
     aiReading.value = data.reading
     aiThread.value = data.thread
     applyQuota(data.quota)
+    if (data.quota) saveCompletedReading(data.quota)
     aiStage.value = 'done'
   } catch (err) {
     if (err instanceof QuotaError) {
@@ -107,6 +183,6 @@ function reset() {
 export function useReading() {
   return {
     phase, questionText, chosen, drawn, aiStage, aiReading, aiThread, quota,
-    start, drawCard, retryAi, reset, refreshQuota,
+    start, drawCard, retryAi, reset, refreshQuota, resumePreviousReading,
   }
 }
