@@ -8,7 +8,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
-import fs from 'node:fs';
+import fs, { realpathSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -524,7 +524,20 @@ export const server = http.createServer((req, res) => {
   return send(res, 404, 'Not found', 'text/plain');
 });
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Determine whether this module is the process entry point (vs. imported by
+// tests). We compare realpaths (not raw paths) so a symlinked project dir —
+// e.g. pm2 launching /home/tr/tarrot/server/server.js where /home/tr/tarrot
+// is a symlink — still matches and actually binds the port.
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   server.listen(PORT, () => {
     console.log(`🌙 小小问题 backend → http://localhost:${PORT}`);
     console.log(`   Ollama model: ${MODEL}${API_KEY ? '' : '  ⚠ 没有 API key（请检查 .env 里的 OLLAMA_API_KEY）'}`);
