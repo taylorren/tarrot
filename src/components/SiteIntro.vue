@@ -57,9 +57,16 @@ async function resume() {
 
 <template>
   <section class="intro" id="intro">
-    <p class="eyebrow">五分钟的心灵笔记 · {{ remainingLabel }}</p>
-    <h1>为一个<br /><em>诚实的问题留出空间。</em></h1>
-    <p class="intro-copy">不是预言，而是换个角度，看见此刻正向你索求关注的事。</p>
+    <div class="intro-main">
+      <p class="eyebrow">五分钟的心灵笔记 · {{ remainingLabel }}</p>
+      <h1>为一个<br /><em>诚实的问题留出空间</em></h1>
+      <p class="intro-copy">不是预言，而是换个角度，看见此刻正向你索求关注的事</p>
+    </div>
+
+    <aside class="dedication" aria-label="作者题献">
+      <p class="dedication-label">谨以此站点 · Dedication</p>
+      <p class="dedication-copy">致敬我挚爱的<em>先严与先慈</em><br />—— 感谢你们的<em>爱与启发</em>。</p>
+    </aside>
 
     <div v-if="coolingDown" class="cooldown-panel" aria-live="polite">
       <p>下次解读还有 {{ cooldownLabel }}</p>

@@ -1,114 +1,135 @@
-# 小小问题
+# 小小问题 (Tarrot)
 
-一个温和的每日塔罗练习应用。回答一个诚实的问题，翻开三张牌，
-获得安静、具体、有温度的解读——其中「关于问题的一点解读」由
-**AI（Ollama 云端模型）** 动态生成，基于你提出的问题与三张真实抽到的
-牌（含正位/逆位）。
+> *This project is dedicated to my late parents, for their love and inspiration.*
 
-> v2 起前端重构为 **Vue 3 + Vite + TypeScript**（原为原生 JS 单文件）。
+> **A gentle daily tarot practice.** Ask one honest question, flip three cards,
+> and receive a quiet, specific, and warm reading — with an AI-generated insight
+> about your question, grounded in the three cards you actually drew (including
+> whether each is upright or reversed).
 
-## 结构
+The insight is generated dynamically by an **Ollama cloud model** running on the
+server, so the API key never reaches the browser. Cards are drawn locally; the
+AI is only asked — and only billed — after the third card is flipped.
 
+- **Frontend:** Vue 3 · Vite · TypeScript
+- **Backend:** zero-dependency Node HTTP server (Ollama cloud proxy + optional
+  production static hosting)
+- **Cards:** 78-card Rider–Waite deck, served as compact WebP assets
+
+---
+
+## ✨ Features
+
+- **Three-card spread** with three meaningful positions (`此刻的真实`, `需要照看的事`,
+  `向前的一种方式`), each card randomly drawn upright or reversed at the moment it's
+  flipped.
+- **Human‑first, AI‑as‑companion:** every card carries its own gentle guidance and
+  a manually curated reflection; the AI synthesizes the reading only after the
+  spread is complete.
+- **Fair billing:** a reading is only requested from the model *after* the third
+  card is revealed, so users never pay for an insight they didn't see.
+- **Server-side quota:** a four-hour cooldown enforces one paid reading per
+  identity, keyed by an anonymous hashed IP (no accounts, no cookies to reset).
+- **Privacy by default:** no raw IPs or personal data stored; previous readings
+  and usage logs live in a git-ignored `logs/` directory and expire automatically.
+- **Graceful degradation:** if the model is slow or fails, the hand-written card
+  reminders remain available with a retry — not a dead end.
+
+---
+
+## 🚀 Quick start
+
+### 1. Prerequisites
+
+- **Node.js ≥ 20** (the project uses native `node --test` and zero npm
+  runtime dependencies)
+- An **Ollama cloud API key** from [ollama.com/settings/keys](https://ollama.com/settings/keys)
+
+### 2. Configure
+
+Create a `.env` at the project root (already in `.gitignore`):
+
+```env
+# Required — create a fresh key at https://ollama.com/settings/keys
+OLLAMA_API_KEY=your-key-here
+
+# Optional — model name (default: gpt-oss:20b).
+# When calling the cloud endpoint directly, the server drops a trailing
+# "-cloud" suffix automatically (it is only meaningful for a local Ollama install).
+OLLAMA_MODEL=gpt-oss:20b
 ```
-index.html            Vite 入口（挂载点 + 字体）
-vite.config.ts        Vue 插件 + 开发代理 /api → :8787
-src/
-  main.ts             createApp 入口
-  styles.css          全局样式（含 a11y：focus / reduced-motion）
-  App.vue             外壳：intro / reading 两个阶段切换
-  components/         SiteIntro · ReadingView · CardSlot ·
-                      Reflection · AiReading · ReadingFooter · Toast
-  store/reading.ts    单例状态机：抽牌 · AI 预取 · 重置
-  composables/        useToast
-  lib/                cards · guidance · spread · markdown · api · types
-public/cards/*.png    78 张牌面（Vite 构建时自动拷贝）
-server/server.js      无依赖 Node 后端：Ollama 代理 + 生产静态托管
-```
 
-- `OLLAMA_API_KEY` 只留在服务端，不下发到浏览器
-- `.env` — Ollama 云端凭据（已在 `.gitignore` 中忽略）
-
-## 运行
+### 3. Run
 
 ```bash
-# 开发：一条命令同时启动 后端(:8787) + Vite(:5173)，/api 自动代理，不限次数
-npm start
-# → 打开 http://localhost:5173
-
-# `npm run dev` 与 `npm start` 相同。
-
-# 也可以分开跑（需要两个终端）
-npm run server      # 仅后端
-npm run dev:web     # 仅前端
-
-# 生产：构建前端后，以配额限制启动静态/API 服务
-npm run prod
-# → 打开 http://localhost:8787
-
-# 质量检查
-npm run type-check   # vue-tsc
+npm install        # installs dev tooling (Vite, vue-tsc, etc.)
+npm start          # backend (:8787) + Vite dev server (:5173) together
+# → open http://localhost:5173
 ```
 
-首次使用请先确认 `.env` 里有有效的 `OLLAMA_API_KEY`。
-在 [ollama.com/settings/keys](https://ollama.com/settings/keys) 创建。
+`/api/*` is proxied from the Vite dev server to the backend so the API key stays
+on the server in every environment.
 
-> 说明：直连 `https://ollama.com/api/chat` 时，服务端会自动去掉
-> `OLLAMA_MODEL` 末尾的 `-cloud` 后缀（该后缀仅用于本地 Ollama 卸载场景）。
+---
 
-## 体验设计：翻完三张牌才请求 AI，也才计费
+## 🏭 Production
 
-- 三张牌（含正/逆位）在用户翻开第一张前就已经确定，
-  但 **AI 请求被刻意推迟到第三张牌翻开的那一刻**（`showAi()` → `requestReading()`）。
-- 这样**计费与体验完全一致**：用户真正收到一次解读，才扣一次次数；
-  中途"换一个问题"或离开的解读永远不会消耗配额（服务端也会检测客户端
-  已断开、不计次，记为 `abandoned`）。
-- 第三张牌翻开后的等待由"让三张牌之间的线索慢慢浮现……"承接；
-  就绪即显示，失败时保留手工逐牌提醒并提供"再试一次"。
-
-> ⚠️ 维护提醒：请不要把 AI 请求提前到三张牌翻完之前——那会让用户
-> 为没有收到的解读付费，也会破坏翻牌节奏。
-
-## 解读间隔与用量日志
-
-云端 Ollama 有成本，所以生产环境中每次**成功送达的解读**后，需要等待 4 小时
-才能开始下一次。可用环境变量 `READING_COOLDOWN_HOURS` 调整间隔：
-
-- **服务端是真正的闸门**（`server/server.js`）：冷却中返回 `429`，前端显示
-  温和的等待提示（牌与手工提醒仍可看，但没有"再试一次"）。
-- **身份**：早期版本以哈希后的 IP（SHA-256 截断，不存原始 IP）作为匿名冷却标识。
-  这避免了清除浏览器 cookie 后绕过冷却；没有账号，也不收集性别/年龄等个人信息。
-  若部署在会正确覆盖 `X-Forwarded-For` 的可信反向代理之后，设置 `TRUST_PROXY=true`；
-  不要在没有该代理保护时设置它。
-- **冷却时间从成功送达解读时开始计算**，不会受时区或午夜边界影响。
-- **失败的调用不计次**（没有花你的配额），但也会被记录下来。
-- **解读内容保留 4 小时**：问题、牌面与 AI 解读仅保存在 `logs/active-readings.json`
-  以支持冷却期间的重读，过期后自动删除。该文件和用量日志均被 `.gitignore` 排除。
-- `GET /api/quota` 是免费预检，前端用它显示是否可开始新解读或剩余等待时间。
-
-用量日志写在 `logs/usage-YYYY-MM.jsonl`（已 gitignore，属于你的私有数据），
-每行一条 JSON，供你判断何时做免费/付费版本：
-
-```json
-{"ts":"…","status":"ok","clientId":"…","ipHash":"…","model":"gpt-oss:20b",
- "latencyMs":8214,"promptTokens":371,"completionTokens":966,"cooldownHours":4}
+```bash
+npm run prod       # builds the frontend into dist/, then serves it with quotas
+# → open http://localhost:8787
 ```
 
-`status` 有四种：`ok`（开始冷却）、`error`（调用失败，不进入冷却）、
-`cooldown`（被 429 挡下的尝试——这是付费需求的最直接信号）、
-`abandoned`（AI 还没返回用户就离开了，不计次）。
-重启会从活跃解读文件恢复最近一次成功解读时间，所以冷却不会因为重启而失效。看数时最值得盯的是
-`promptTokens + completionTokens`（你真实的成本）和 `cooldown` 数量。
+In production the backend also serves the built `dist/` output, applies a
+one-year immutable cache to versioned assets and card art, and enforces the
+per-identity cooldown.
 
-## AI 牌义参考
+---
 
-服务端的 `server/tarot-knowledge.json` 包含完整 78 张牌的关键词、正位与逆位英文参考，
-每次只向模型提供本次抽到的三张牌。数据来自
-[coderdoder-mode/Mystic](https://github.com/coderdoder-mode/Mystic)，采用 MIT 许可证；
-原始文件、许可证和归属说明保存在 `server/third-party/`。中文的三牌整合、语气与安全边界由本项目定义。
+## 📖 Common commands
 
-## API
+| Command        | What it does                                        |
+| -------------- | --------------------------------------------------- |
+| `npm start`    | Backend (`:8787`) + Vite dev server (`:5173`)        |
+| `npm run dev`  | Same as `npm start`                                 |
+| `npm run server`  | Backend only                                       |
+| `npm run dev:web` | Frontend (Vite) only                               |
+| `npm run dev:api` | Backend in development mode                        |
+| `npm run build`   | Build frontend into `dist/`                        |
+| `npm run preview` | Preview the production build                        |
+| `npm run prod`    | Build + run production server with quotas          |
+| `npm run type-check` | Static type-checking via `vue-tsc`               |
+| `npm test`         | Run the regression suite (`node --test`)          |
 
-`POST /api/reading`，请求体：
+---
+
+## 🧠 How a reading works
+
+```
+User asks a question → flips 3 cards (drawn on the fly)
+        → after the 3rd flip, the client calls POST /api/reading
+        → server validates, grounds the cards in built-in tarot knowledge
+        → streams to Ollama cloud → returns { reading, thread }
+        → a 4-hour cooldown begins for that identity
+```
+
+- Cards are **not** predetermined — each one is drawn at the moment it's flipped.
+- The AI request is deliberately deferred until the third card is revealed
+  (`showAi()` → `requestReading()`), so **billing and experience stay aligned**:
+  a reading is only ever charged when the user actually receives it.
+- Users who "change the question" or abandon mid-spread never consume quota —
+  the server also detects a disconnected client (`abandoned`) and never stores
+  or bills it.
+- The model prompt is grounded with the three drawn cards from
+  `server/tarot-knowledge.json` (full 78-card keywords + upright/reversed
+  references), not arbitrary client text.
+
+---
+
+## 🔌 API
+
+### `POST /api/reading`
+
+Requests an AI reading for a validated question and exactly three cards.
 
 ```json
 {
@@ -121,8 +142,156 @@ npm run type-check   # vue-tsc
 }
 ```
 
-响应：`{ "reading": "…解读文本…", "thread": "…今天可做的一小步…" }`
+**Response** `200`:
 
-服务端会在调用模型前验证请求：`question` 必须是最多 130 个字符的文本（空白问题会使用默认问题）；
-`cards` 必须刚好有三张、按 `position` 0–2 排列、互不重复，并且每张的 `index`、`name` 与
-正逆位都必须匹配内置的 78 张牌库。无效请求会收到 `400`，不会调用模型或消耗配额。
+```json
+{
+  "reading": "解读文本…",
+  "thread": "今天可做的一小步…",
+  "quota": { "used": 1, "limit": 1, "resetAt": 1780000000000 }
+}
+```
+
+**Validation** happens server-side before the model is called:
+
+- `question` — a non-empty string of at most 130 characters (a blank question
+  falls back to the default).
+- `cards` — exactly three unique cards, ordered by `position` 0–2, each with an
+  `index`/`name`/`reversed` combination that matches the built-in 78-card deck.
+
+Invalid requests return **`400`** and never call the model or consume quota.
+
+### `GET /api/quota`
+
+Free pre-flight check; never calls the model. Returns whether the caller is
+cooling down and, if so, when it resets. The frontend uses this to show whether
+a new reading can start or how long to wait.
+
+### `GET /api/previous-reading`
+
+Returns the currently completed reading (while its 4-hour cooldown is active) so
+a user can reopen it. Returns `404` when there is no active reading.
+
+### Status codes
+
+| Code | Meaning                                                  |
+| ---- | -------------------------------------------------------- |
+| `200` | Reading returned / quota OK                              |
+| `400` | Invalid request body (no model call, no quota)           |
+| `404` | Unknown or inactive previous reading                     |
+| `409` | A request for this identity is already in-flight         |
+| `429` | Cooldown active for this identity                        |
+| `502` | Upstream AI failure — generic message; details stay on the server |
+
+---
+
+## ⚙️ Environment variables
+
+All settings are read from `.env` at the project root (or the environment) at
+server startup.
+
+| Variable                   | Default        | Purpose                                                       |
+| -------------------------- | -------------- | ------------------------------------------------------------- |
+| `OLLAMA_API_KEY`           | —              | **Required** for the AI. Ollama cloud API key.                |
+| `OLLAMA_MODEL`             | `gpt-oss:20b`  | Model name; a trailing `-cloud` is stripped for direct cloud calls. |
+| `OLLAMA_URL`               | `https://ollama.com/api/chat` | Override the upstream endpoint (also enables a self-hosted / plain-`http` Ollama). |
+| `PORT`                     | `8787`         | HTTP port for the Node server.                                |
+| `NODE_ENV`                 | `development`  | `production` enables quotas and static hosting of `dist/`.    |
+| `READING_COOLDOWN_HOURS`   | `4`            | Cooldown between paid readings, in hours.                      |
+| `TRUST_PROXY`              | unset          | Set to `true` **only** behind a trusted reverse proxy that correctly overwrites `X-Forwarded-For`. |
+| `LOG_DIR`                  | `./logs`       | Where usage + active-reading files are written.               |
+
+---
+
+## 📂 Project structure
+
+```
+.
+├── index.html             Vite entry (mount point + fonts)
+├── vite.config.ts         Vue plugin + /api proxy → :8787 (dev)
+├── tsconfig.json
+├── package.json
+│
+├── src/                   Vue 3 + TypeScript frontend
+│   ├── main.ts            App entry
+│   ├── styles.css         Global styles (a11y: focus / reduced-motion)
+│   ├── App.vue            Outer shell — intro / reading phases
+│   ├── components/        SiteIntro · ReadingView · CardSlot ·
+│   │                      Reflection · AiReading · ReadingFooter · Toast
+│   ├── store/             reading.ts — singleton state machine
+│   ├── composables/       useToast
+│   └── lib/               cards · cardImages · guidance · spread ·
+│                          markdown · api · types
+│
+├── public/cards/          78 card images (WebP)
+├── server/
+│   ├── server.js          Zero-dependency Node backend (proxy + static)
+│   ├── tarot-knowledge.json   78-card keywords + upright/reversed refs
+│   └── third-party/       vendored deck data (MIT attributions)
+│
+└── test/                  Regression suite (`npm test`)
+    ├── server.validation.test.js
+    └── server.integration.test.js
+```
+
+---
+
+## 🧪 Tests
+
+The backend has a growing regression suite run with the built-in Node test
+runner (no extra dependency):
+
+```bash
+npm test
+```
+
+- **`test/server.validation.test.js`** — unit tests for request validation,
+  static-path containment, rate-limit identity, model-output parsing, cooldown/
+  expiry math, cache headers, and failure-detail hygiene.
+- **`test/server.integration.test.js`** — boots the real server against a local
+  mock Ollama and asserts the full lifecycle end-to-end: successful reading →
+  `previous-reading`, `429` cooldown per identity, `409` concurrent in-flight
+  rejection, and abandoned requests storing nothing / consuming no quota.
+
+The integration tests use `OLLAMA_URL` + `LOG_DIR` env overrides, so they run
+entirely offline and never touch your real logs or API key.
+
+---
+
+## 🛡️ Privacy & data
+
+- **No accounts, no personal data.** Rate limiting is keyed by a truncated
+  SHA-256 hash of the client IP — raw IPs are never stored.
+- **Costs are kept honest.** The AI model is only called for a *completed*
+  reading. Failures are free and don't consume quota.
+- **Four-hour retention.** The last completed reading is kept (server-side in
+  `logs/active-readings.json` and in `localStorage` on the client) only long
+  enough to reopen it during the cooldown, then expires.
+- **Private analytics.** Usage lines are appended to `logs/usage-YYYY-MM.jsonl`
+  and are git-ignored by default.
+
+### Required privacy check before a multi-instance deployment
+
+Rate limiting currently keyed by IP is deliberately sufficient for an
+early-stage, single-instance deployment. Before scaling to multiple instances
+or needing nuanced shared-network policies, revisit the identity scheme (a
+shared store will be required).
+
+---
+
+## 🙏 Credits
+
+- The 78-card upright/reversed references are grounded in the open
+  [coderdoder-mode/Mystic](https://github.com/coderdoder-mode/Mystic) dataset
+  (MIT), vendored under `server/third-party/`.
+- Card art: Rider–Waite Smith deck images served as WebP.
+- Chinese spread integration, tone, and safety boundaries are defined by this
+  project.
+
+---
+
+## 📄 License
+
+Released under the **MIT license** (declared in `package.json`). The bundled
+third-party card dataset and art carry their own MIT attributions under
+`server/third-party/`.

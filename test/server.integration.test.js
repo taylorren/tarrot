@@ -60,7 +60,7 @@ process.env.OLLAMA_URL = `http://127.0.0.1:${mockPort}`;
 process.env.LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tarrot-logs-'));
 process.env.TRUST_PROXY = 'true';
 
-const { server, getRateLimitIdentity } = await import('../server/server.js');
+const { server } = await import('../server/server.js');
 
 const appPort = await new Promise((resolve) => {
   server.listen(0, '127.0.0.1', () => resolve(server.address().port));
@@ -74,11 +74,6 @@ const payload = () => ({
     { index: 1, name: 'The Magician', reversed: true, position: 1 },
     { index: 2, name: 'The High Priestess', reversed: false, position: 2 },
   ],
-});
-
-const identity = (ip) => getRateLimitIdentity({
-  headers: { 'x-forwarded-for': ip },
-  socket: { remoteAddress: '127.0.0.1' },
 });
 
 function postReading(ip, body = payload(), { signal } = {}) {
@@ -168,6 +163,9 @@ test('server reading, cooldown, concurrency, previous-reading, and abandonment',
 
     assert.equal(quota.used, 0, 'abandoned request must not consume quota');
     assert.equal(prev.status, 404, 'abandoned request must not store a reading');
+  });
+});
+
 // Stop accepting and drop idle connections so the runner's process can exit
 // cleanly after all tests complete.
 test.after(async () => {
@@ -175,6 +173,4 @@ test.after(async () => {
     try { s.closeIdleConnections?.(); } catch (_) { /* ignore */ }
     try { s.close(); } catch (_) { /* ignore */ }
   }
-});
-  });
 });
