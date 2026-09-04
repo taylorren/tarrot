@@ -529,10 +529,15 @@ export const server = http.createServer((req, res) => {
 // e.g. pm2 launching /home/tr/tarrot/server/server.js where /home/tr/tarrot
 // is a symlink — still matches and actually binds the port.
 function isMainModule() {
-  if (!process.argv[1]) return false;
+  if (!process.argv[1]) { console.error('[main-check] no argv[1]'); return false; }
   try {
-    return realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
+    const a = realpathSync(path.resolve(process.argv[1]));
+    const b = realpathSync(fileURLToPath(import.meta.url));
+    const ok = a === b;
+    console.error(`[main-check] argv1=${JSON.stringify(process.argv[1])}\n  realpath(argv1)=${a}\n  realpath(module)=${b}\n  ok=${ok}`);
+    return ok;
+  } catch (e) {
+    console.error('[main-check] error', e.message);
     return false;
   }
 }
