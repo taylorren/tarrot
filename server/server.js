@@ -104,6 +104,7 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.svg': 'image/svg+xml',
   '.ttf': 'font/ttf',
@@ -129,6 +130,16 @@ export function resolveStaticPath(urlPath) {
     throw new StaticPathError('Forbidden', 403);
   }
   return filePath;
+}
+
+/** Cache immutable build assets and static card art; always revalidate HTML. */
+export function staticCacheControl(filePath) {
+  const assetsPath = path.join(DIST, 'assets') + path.sep;
+  const cardsPath = path.join(DIST, 'cards') + path.sep;
+  if (filePath.startsWith(assetsPath) || filePath.startsWith(cardsPath)) {
+    return 'public, max-age=31536000, immutable';
+  }
+  return 'no-cache';
 }
 
 function send(res, code, body, type = 'application/json; charset=utf-8') {
@@ -253,12 +264,12 @@ function serveStatic(req, res, urlPath) {
   fs.stat(filePath, (err, stat) => {
     if (!err && stat.isFile()) {
       const type = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': type });
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': staticCacheControl(filePath) });
       fs.createReadStream(filePath).pipe(res);
       return;
     }
     // SPA fallback
-    res.writeHead(200, { 'Content-Type': MIME['.html'] });
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
     fs.createReadStream(path.join(DIST, 'index.html')).pipe(res);
   });
 }

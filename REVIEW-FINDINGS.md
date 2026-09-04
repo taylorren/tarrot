@@ -71,9 +71,14 @@ data shows the cooldown has ended, and when beginning a fresh reading.
 
 Affected: `src/store/reading.ts`, `src/components/SiteIntro.vue`.
 
-## 5. Reduce card image transfer and add caching
+## 5. [x] Reduce card image transfer and add caching
 
 **Priority: high (performance)**
+
+**Status: resolved 2026-09-04.** The original 600px card dimensions are
+preserved, but PNGs have been replaced with WebP files at quality 82. The full
+card set is reduced from roughly 112 MB to 12.9 MB. Card art and Vite's hashed
+assets receive one-year immutable cache headers; HTML is revalidated.
 
 The 78 PNG card files total about 112 MB (about 1.44 MB each). A three-card
 reading can transfer more than 4 MB of images, and the production static server

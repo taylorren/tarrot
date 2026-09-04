@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getRateLimitIdentity, resolveStaticPath, validateReadingPayload } from '../server/server.js';
+import { getRateLimitIdentity, resolveStaticPath, staticCacheControl, validateReadingPayload } from '../server/server.js';
 
 const validPayload = () => ({
   question: '我正在面对一个选择',
@@ -75,4 +75,10 @@ test('uses forwarded IP only when a trusted proxy is explicitly configured', () 
     if (original === undefined) delete process.env.TRUST_PROXY;
     else process.env.TRUST_PROXY = original;
   }
+});
+
+test('caches versioned build assets and card art, but not HTML', () => {
+  assert.match(staticCacheControl(resolveStaticPath('/assets/app-123.js')), /immutable/);
+  assert.match(staticCacheControl(resolveStaticPath('/cards/The_Fool.webp')), /immutable/);
+  assert.equal(staticCacheControl(resolveStaticPath('/index.html')), 'no-cache');
 });

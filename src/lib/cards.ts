@@ -6,7 +6,9 @@ import { cardImages } from './cardImages'
 export const cards: Card[] = cardImages.map((ci) => ({
   name: ci.name,
   index: ci.index,
-  src: ci.src,
+  // WebP preserves the existing 600px card resolution while reducing each
+  // transfer substantially compared with the original PNG source.
+  src: ci.src.replace(/\.png$/, '.webp'),
 }))
 
 const majorTitles: Record<string, string> = {
