@@ -17,7 +17,9 @@ const __here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__here, '..');
 const DIST = path.join(ROOT, 'dist');
 const PORT = process.env.PORT || 8787;
-const OLLAMA_CHAT = 'https://ollama.com/api/chat';
+// Overridable via OLLAMA_URL so a self-hosted Ollama (plain http) or a local
+// test double can be used; production keeps the official cloud endpoint.
+const OLLAMA_CHAT = process.env.OLLAMA_URL || 'https://ollama.com/api/chat';
 const TAROT_KNOWLEDGE_PATH = path.join(__here, 'tarot-knowledge.json');
 const DEFAULT_QUESTION = '此刻有什么正停留在我心里';
 const MAX_QUESTION_LENGTH = 130;
@@ -177,7 +179,7 @@ export function getRateLimitIdentity(req) {
 const COOLDOWN_HOURS = Number(process.env.READING_COOLDOWN_HOURS || 4);
 const COOLDOWN_MS = COOLDOWN_HOURS * 60 * 60 * 1000;
 
-function quotaSnapshot(lastReadingAt) {
+export function quotaSnapshot(lastReadingAt) {
   const resetAt = lastReadingAt + COOLDOWN_MS;
   const coolingDown = Date.now() < resetAt;
   return {
@@ -191,13 +193,14 @@ function quotaSnapshot(lastReadingAt) {
 // this index is rebuilt from it on boot and updated in memory.
 // Complete readings exist only while their cooldown is active, so the user can
 // reopen the prior reading without creating a long-term personal-data archive.
-const LOG_DIR = path.join(ROOT, 'logs');
+// LOG_DIR is overridable so tests (and alternative deployments) can isolate it.
+const LOG_DIR = process.env.LOG_DIR || path.join(ROOT, 'logs');
 const ACTIVE_READINGS_PATH = path.join(LOG_DIR, 'active-readings.json');
 const lastReadingIndex = new Map();
 const inFlightReadings = new Set();
 
-function isActiveReading(reading) {
-  return reading && Date.now() < reading.completedAt + COOLDOWN_MS;
+export function isActiveReading(reading) {
+  return Boolean(reading) && Date.now() < reading.completedAt + COOLDOWN_MS;
 }
 
 function saveActiveReadings() {
@@ -311,11 +314,22 @@ function buildMessages({ question, cards }) {
   ];
 }
 
+// A request is abandoned when the client left before the AI finished (closed the
+// tab, started a new question, or disconnected). In that case no reading should
+// be stored and no quota consumed.
+export function clientGone(res) {
+  return Boolean(res && (res.writableEnded || res.destroyed));
+}
+
 function callOllama(messages) {
   return new Promise((resolve, reject) => {
     if (!API_KEY) return reject(new Error('Missing OLLAMA_API_KEY in .env'));
+    // Scheme-aware so a self-hosted Ollama (plain http) or a local test double
+    // can be used; the cloud endpoint stays https.
+    const url = new URL(OLLAMA_CHAT);
+    const transport = url.protocol === 'https:' ? https : http;
     const payload = JSON.stringify({ model: MODEL, messages, stream: false, think: false, format: 'json' });
-    const req = https.request(OLLAMA_CHAT, {
+    const req = transport.request(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -343,10 +357,23 @@ function callOllama(messages) {
 }
 
 // Strip markdown fences, then parse the JSON the model was asked to return.
-function parseInsight(content) {
+export function parseInsight(content) {
   const cleaned = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
   try { return { ...JSON.parse(cleaned), validJson: true }; } catch (_) { /* fall through */ }
   return { reading: cleaned, thread: '', validJson: false };
+}
+
+/**
+ * Client-safe JSON body for an upstream (Ollama/provider) failure.
+ *
+ * Raw provider/upstream details must never reach the browser — they can expose
+ * internal model names, endpoints, request internals, or keys. The caller is
+ * responsible for retaining the full diagnostic detail in the server log only.
+ * Every error body is identical, so callers learn *whether* a call failed but
+ * nothing about *why*.
+ */
+export function upstreamErrorBody() {
+  return { error: 'AI 暂时没有回应。请稍后再试。' };
 }
 
 async function handleReading(req, res) {
@@ -389,7 +416,7 @@ async function handleReading(req, res) {
 
     // Fairness: if the user already left ("换一个问题" / closed the tab) while
     // the AI was generating, they never saw a reading — don't deduct.
-    if (res.writableEnded || res.destroyed) {
+    if (clientGone(res)) {
       appendLog({
         ts: new Date().toISOString(), status: 'abandoned', clientId, ipHash: ipHash(req),
         model: MODEL, latencyMs: Date.now() - startedAt,
@@ -444,7 +471,10 @@ async function handleReading(req, res) {
       quota: quotaSnapshot(completedAt),
     }));
   } catch (err) {
-    // Failed calls cost nothing and don't consume quota — but log them.
+    // Failed calls cost nothing and don't consume quota. Retain the full
+    // upstream detail ONLY in the server log; the client gets the same safe
+    // message for every failure and never sees raw provider internals.
+    const failureDetail = String(err?.message || err);
     appendLog({
       ts: new Date().toISOString(),
       status: 'error',
@@ -452,10 +482,10 @@ async function handleReading(req, res) {
       ipHash: ipHash(req),
       model: MODEL,
       latencyMs: Date.now() - startedAt,
-      detail: String(err.message || err).slice(0, 200),
+      detail: failureDetail.slice(0, 2000),
     });
-    console.error('[reading]', err.message);
-    return send(res, 502, JSON.stringify({ error: 'AI 暂时没有回应。请稍后再试。', detail: String(err.message || err) }));
+    console.error('[reading]', failureDetail);
+    return send(res, 502, JSON.stringify(upstreamErrorBody()));
   } finally {
     inFlightReadings.delete(clientId);
   }
@@ -484,7 +514,8 @@ function handlePreviousReading(req, res) {
 }
 
 // ---- Request router ------------------------------------------------------
-const server = http.createServer((req, res) => {
+// Exported so tests can bind the real server to an ephemeral port and drive it.
+export const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (req.method === 'POST' && url.pathname === '/api/reading') return handleReading(req, res);
   if (req.method === 'GET' && url.pathname === '/api/quota') return handleQuota(req, res);

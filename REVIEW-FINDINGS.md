@@ -88,18 +88,41 @@ assets.
 
 Affected: `public/cards/`, `src/lib/cardImages.ts`, `server/server.js`.
 
-## 6. Keep upstream failure details on the server
+## 6. [x] Keep upstream failure details on the server
 
 **Priority: medium**
+
+**Status: resolved 2026-09-04.** The 502 error response no longer includes a
+`detail` field. Clients now receive the same fixed, safe user-facing message for
+every upstream failure (`upstreamErrorBody`), while the full diagnostic detail
+is retained in the JSONL log and server console only.
 
 The API returns raw Ollama/provider error details to the browser. Return only a
 safe user-facing message; retain diagnostic detail in server logs.
 
 Affected: `server/server.js` (`handleReading` error path).
 
-## 7. Add regression tests for critical behavior
+## 7. [x] Add regression tests for critical behavior
 
 **Priority: medium**
+
+**Status: resolved 2026-09-04.** A regression suite now covers all the listed
+critical behavior across two test files, run via `npm test` (`node --test`):
+
+- `test/server.validation.test.js` — request validation, cooldown
+  (`quotaSnapshot`), concurrent/in-flight rejection (`clientGone` +
+  integration), previous-reading expiry (`isActiveReading`), malformed static
+  URLs, model-output validation (`parseInsight`), rate-limit identity, cache
+  headers, and failure-detail hygiene.
+- `test/server.integration.test.js` — boots the real server against a local
+  mock Ollama double and asserts end-to-end: 200 reading → `previous-reading`;
+  429 cooldown per identity; 409 concurrent in-flight (model called once); and
+  an aborted request stores nothing and consumes no quota.
+
+To make these reachable, `server.js` gained overridable `OLLAMA_URL` and
+`LOG_DIR` env seams (prod defaults unchanged), scheme-aware Ollama transport
+(so a self-hosted/plain-http Ollama works too), and exports of `server`,
+`quotaSnapshot`, `isActiveReading`, `parseInsight`, and `clientGone`.
 
 There is currently no automated test suite. Cover request validation, cooldown
 and concurrent requests, abandoned requests, previous-reading expiry, malformed
