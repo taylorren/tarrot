@@ -20,6 +20,7 @@ const READING_STORAGE_KEY = 'tarrot:last-completed-reading'
 
 let pending: Promise<ReadingResponse> | null = null
 let abort: AbortController | null = null
+let savedReadingExpiryTimer: ReturnType<typeof setTimeout> | null = null
 
 interface SavedReading {
   question: string
@@ -29,8 +30,45 @@ interface SavedReading {
   resetAt: number
 }
 
+function clearSavedReading() {
+  if (savedReadingExpiryTimer) clearTimeout(savedReadingExpiryTimer)
+  savedReadingExpiryTimer = null
+  try { localStorage.removeItem(READING_STORAGE_KEY) } catch { /* storage is optional */ }
+}
+
+function scheduleSavedReadingRemoval(resetAt: number) {
+  if (savedReadingExpiryTimer) clearTimeout(savedReadingExpiryTimer)
+  const delay = resetAt - Date.now()
+  if (!Number.isFinite(delay) || delay <= 0) {
+    clearSavedReading()
+    return
+  }
+  savedReadingExpiryTimer = setTimeout(clearSavedReading, delay)
+}
+
+function readSavedReading(): SavedReading | null {
+  try {
+    const raw = localStorage.getItem(READING_STORAGE_KEY)
+    if (!raw) return null
+    const saved = JSON.parse(raw) as SavedReading
+    if (typeof saved.resetAt !== 'number' || saved.resetAt <= Date.now()) {
+      clearSavedReading()
+      return null
+    }
+    scheduleSavedReadingRemoval(saved.resetAt)
+    return saved
+  } catch {
+    clearSavedReading()
+    return null
+  }
+}
+
 function applyQuota(q?: Quota) {
-  if (q) quota.value = q
+  if (!q) return
+  quota.value = q
+  // The server is authoritative for the cooldown. Once it has ended, retain
+  // no personal reading data locally, even if an old expiry timer was missed.
+  if (!isCoolingDown(q)) clearSavedReading()
 }
 
 function isCoolingDown(q: Quota) {
@@ -39,25 +77,21 @@ function isCoolingDown(q: Quota) {
 
 function restoreSavedReading(q: Quota) {
   if (!isCoolingDown(q)) return false
-  try {
-    const saved = JSON.parse(localStorage.getItem(READING_STORAGE_KEY) || '') as SavedReading
-    if (saved.resetAt !== q.resetAt || !Array.isArray(saved.cards) || saved.cards.length !== 3) return false
-    const resolved = saved.cards.map((c) => {
-      const card = deck.find((d) => d.index === c.index) ?? deck.find((d) => d.name === c.name)
-      return card ? { ...card, reversed: c.reversed } : null
-    })
-    if (resolved.some((card) => card === null)) return false
-    questionText.value = saved.question
-    chosen.value = resolved as Card[]
-    drawn.value = saved.cards.length
-    aiReading.value = saved.reading
-    aiThread.value = saved.thread
-    aiStage.value = 'done'
-    phase.value = 'reading'
-    return true
-  } catch {
-    return false
-  }
+  const saved = readSavedReading()
+  if (!saved || saved.resetAt !== q.resetAt || !Array.isArray(saved.cards) || saved.cards.length !== 3) return false
+  const resolved = saved.cards.map((c) => {
+    const card = deck.find((d) => d.index === c.index) ?? deck.find((d) => d.name === c.name)
+    return card ? { ...card, reversed: c.reversed } : null
+  })
+  if (resolved.some((card) => card === null)) return false
+  questionText.value = saved.question
+  chosen.value = resolved as Card[]
+  drawn.value = saved.cards.length
+  aiReading.value = saved.reading
+  aiThread.value = saved.thread
+  aiStage.value = 'done'
+  phase.value = 'reading'
+  return true
 }
 
 function saveCompletedReading(q: Quota) {
@@ -69,7 +103,14 @@ function saveCompletedReading(q: Quota) {
     thread: aiThread.value,
     resetAt: q.resetAt,
   }
-  localStorage.setItem(READING_STORAGE_KEY, JSON.stringify(saved))
+  try {
+    localStorage.setItem(READING_STORAGE_KEY, JSON.stringify(saved))
+    scheduleSavedReadingRemoval(saved.resetAt)
+  } catch {
+    // A completed reading remains visible even when privacy settings deny
+    // browser storage; it simply cannot be reopened after a refresh.
+    clearSavedReading()
+  }
 }
 
 /** Free pre-flight so the intro screen can show the next available reading. */
@@ -128,6 +169,9 @@ function requestReading() {
 
 function start(question: string) {
   if (restoreSavedReading(quota.value)) return
+  // This is a new reading, so it must not inherit personal data from an older
+  // one (including data left behind by a browser that was closed at expiry).
+  clearSavedReading()
   questionText.value = question.trim() || '此刻有什么正停留在我心里'
   chosen.value = [null, null, null] // cards are drawn at click-time
   drawn.value = 0
@@ -182,6 +226,10 @@ function reset() {
   chosen.value = [null, null, null]
   refreshQuota()
 }
+
+// On every app load, immediately remove a reading whose retention window has
+// already elapsed; a future window is scheduled again for this page session.
+readSavedReading()
 
 // Re-export refs as lifecycle-stable getters via a small wrapper, so callers
 // can destructure `const { phase } = useReading()` and keep reactivity.

@@ -19,6 +19,8 @@ const DIST = path.join(ROOT, 'dist');
 const PORT = process.env.PORT || 8787;
 const OLLAMA_CHAT = 'https://ollama.com/api/chat';
 const TAROT_KNOWLEDGE_PATH = path.join(__here, 'tarot-knowledge.json');
+const DEFAULT_QUESTION = '此刻有什么正停留在我心里';
+const MAX_QUESTION_LENGTH = 130;
 
 // ---- Minimal .env loader (no dependencies) -------------------------------
 function loadEnv() {
@@ -43,6 +45,58 @@ const MODEL = (process.env.OLLAMA_MODEL || 'gpt-oss:20b').replace(/-cloud$/, '')
 const HAS_DIST = fs.existsSync(path.join(DIST, 'index.html'));
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const TAROT_KNOWLEDGE = JSON.parse(fs.readFileSync(TAROT_KNOWLEDGE_PATH, 'utf8'));
+// The JSON is maintained in the same 0–77 order as the frontend deck. Keep
+// this server-side mapping authoritative: clients must not choose arbitrary
+// card names or pair a valid name with a different card index.
+const CARD_NAMES = Object.keys(TAROT_KNOWLEDGE);
+
+class InputValidationError extends Error {}
+class StaticPathError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Establish the API's trust boundary before any input reaches the model.
+ * Returns a fresh, canonical payload rather than forwarding client objects.
+ */
+export function validateReadingPayload(payload) {
+  if (!isPlainObject(payload)) throw new InputValidationError('Invalid reading request');
+  if (typeof payload.question !== 'string') throw new InputValidationError('Question must be text');
+
+  const question = payload.question.trim() || DEFAULT_QUESTION;
+  if (question.length > MAX_QUESTION_LENGTH) {
+    throw new InputValidationError(`Question must be ${MAX_QUESTION_LENGTH} characters or fewer`);
+  }
+
+  if (!Array.isArray(payload.cards) || payload.cards.length !== 3) {
+    throw new InputValidationError('Exactly three cards are required');
+  }
+
+  const indexes = new Set();
+  const cards = payload.cards.map((card, position) => {
+    if (!isPlainObject(card) || !Number.isInteger(card.index) || typeof card.name !== 'string' || typeof card.reversed !== 'boolean') {
+      throw new InputValidationError('Each card must include a valid index, name, and orientation');
+    }
+    if (card.position !== position) throw new InputValidationError('Cards must use positions 0, 1, and 2 in order');
+    if (card.index < 0 || card.index >= CARD_NAMES.length || CARD_NAMES[card.index] !== card.name) {
+      throw new InputValidationError('Card does not match the canonical deck');
+    }
+    if (indexes.has(card.index)) throw new InputValidationError('Cards must be distinct');
+    indexes.add(card.index);
+    return { index: card.index, name: CARD_NAMES[card.index], reversed: card.reversed, position };
+  });
+
+  return { question, cards };
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -56,6 +110,26 @@ const MIME = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
 };
+
+/** Resolve a URL path to a file within dist/, rejecting malformed or escaping paths. */
+export function resolveStaticPath(urlPath) {
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(urlPath);
+  } catch (_) {
+    throw new StaticPathError('Malformed URL path', 400);
+  }
+  if (decodedPath.includes('\0')) throw new StaticPathError('Invalid URL path', 400);
+
+  // Strip URL-root separators before resolving so an absolute decoded path
+  // cannot replace DIST. path.resolve then makes any ../ traversal visible.
+  const relativePath = decodedPath.replace(/^[/\\]+/, '');
+  const filePath = path.resolve(DIST, relativePath);
+  if (filePath !== DIST && !filePath.startsWith(DIST + path.sep)) {
+    throw new StaticPathError('Forbidden', 403);
+  }
+  return filePath;
+}
 
 function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
@@ -72,32 +146,20 @@ function readBody(req) {
   });
 }
 
-// ---- Anonymous identity (cookie first, hashed-IP fallback) ---------------
-const COOKIE_NAME = 'tarrot_id';
-const COOKIE_MAX_AGE = 31536000; // 1 year
-
-function getCookie(req, name) {
-  const header = req.headers.cookie || '';
-  for (const part of header.split(';')) {
-    const [k, ...v] = part.trim().split('=');
-    if (k === name) return v.join('=');
-  }
-  return null;
-}
-
-/** Resolve (and if needed issue) the anonymous client id. */
-function getClientId(req, res) {
-  const existing = getCookie(req, COOKIE_NAME);
-  if (existing && /^[a-f0-9-]{36}$/.test(existing)) return existing;
-  const id = crypto.randomUUID();
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=${id}; Path=/; Max-Age=${COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax`);
-  return id;
-}
-
-/** Never store raw IPs — hash them. Enough to distinguish anonymous clients. */
+// ---- Anonymous rate-limit identity ---------------------------------------
+// Never store raw IPs. A short hash is sufficient for this early-stage,
+// single-instance cooldown and cannot be reset by clearing browser cookies.
 function ipHash(req) {
-  const ip = (req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+  const forwardedFor = req.headers?.['x-forwarded-for'];
+  const forwardedIp = process.env.TRUST_PROXY === 'true' && typeof forwardedFor === 'string'
+    ? forwardedFor.split(',')[0].trim()
+    : '';
+  const ip = (forwardedIp || req.socket.remoteAddress || 'unknown').replace(/^::ffff:/, '');
   return crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16);
+}
+
+export function getRateLimitIdentity(req) {
+  return ipHash(req);
 }
 
 // ---- Reading cooldown -----------------------------------------------------
@@ -121,6 +183,7 @@ function quotaSnapshot(lastReadingAt) {
 const LOG_DIR = path.join(ROOT, 'logs');
 const ACTIVE_READINGS_PATH = path.join(LOG_DIR, 'active-readings.json');
 const lastReadingIndex = new Map();
+const inFlightReadings = new Set();
 
 function isActiveReading(reading) {
   return reading && Date.now() < reading.completedAt + COOLDOWN_MS;
@@ -180,8 +243,12 @@ setInterval(pruneExpiredReadings, 60_000).unref();
 // ---- Static serving (production only) ------------------------------------
 function serveStatic(req, res, urlPath) {
   if (!HAS_DIST) return send(res, 404, 'Not found (run `npm run build` first, or use `npm run dev`)', 'text/plain');
-  let filePath = path.normalize(path.join(DIST, decodeURIComponent(urlPath)));
-  if (!filePath.startsWith(DIST)) return send(res, 403, 'Forbidden', 'text/plain');
+  let filePath;
+  try { filePath = resolveStaticPath(urlPath); }
+  catch (err) {
+    if (err instanceof StaticPathError) return send(res, err.statusCode, err.message, 'text/plain');
+    throw err;
+  }
   if (filePath.endsWith(path.sep)) filePath = path.join(filePath, 'index.html');
   fs.stat(filePath, (err, stat) => {
     if (!err && stat.isFile()) {
@@ -224,8 +291,8 @@ function buildMessages({ question, cards }) {
     '不要提及自己是 AI，不要使用“命中注定”之类宿命论口吻。直接、诚恳、温暖。';
 
   const user =
-    `问题：${question || '此刻有什么正停留在我心里'}\n\n` +
-    `牌阵：\n${spread || '（未提供牌）'}\n\n请给我这次的解读。`;
+    `问题：${question}\n\n` +
+    `牌阵：\n${spread}\n\n请给我这次的解读。`;
 
   return [
     { role: 'system', content: system },
@@ -272,10 +339,17 @@ function parseInsight(content) {
 }
 
 async function handleReading(req, res) {
-  const clientId = getClientId(req, res);
+  const clientId = getRateLimitIdentity(req);
   let payload;
   try { payload = JSON.parse(await readBody(req)); }
   catch (_) { return send(res, 400, JSON.stringify({ error: 'Invalid JSON body' })); }
+  try { payload = validateReadingPayload(payload); }
+  catch (err) {
+    if (err instanceof InputValidationError) {
+      return send(res, 400, JSON.stringify({ error: err.message }));
+    }
+    throw err;
+  }
 
   const previousReading = lastReadingFor(clientId);
   const quota = quotaSnapshot(previousReading?.completedAt || 0);
@@ -288,6 +362,13 @@ async function handleReading(req, res) {
       quota,
     }));
   }
+
+  // The UI submits only once, but this prevents parallel requests (whether
+  // accidental or scripted) from passing the quota check together.
+  if (inFlightReadings.has(clientId)) {
+    return send(res, 409, JSON.stringify({ error: '正在生成这次解读，请稍候。' }));
+  }
+  inFlightReadings.add(clientId);
 
   const startedAt = Date.now();
   try {
@@ -309,12 +390,7 @@ async function handleReading(req, res) {
     const completedAt = Date.now();
     const reading = (insight.reading || '').trim();
     const thread = (insight.thread || '').trim();
-    const cards = (Array.isArray(payload?.cards) ? payload.cards : []).map((card, position) => ({
-      index: Number.isInteger(card?.index) ? card.index : undefined,
-      name: String(card?.name || ''),
-      reversed: !!card?.reversed,
-      position,
-    }));
+    const cards = payload.cards;
     const grounding = cards.map((card) => ({
       name: card.name,
       orientation: card.reversed ? 'reversed' : 'upright',
@@ -369,17 +445,19 @@ async function handleReading(req, res) {
     });
     console.error('[reading]', err.message);
     return send(res, 502, JSON.stringify({ error: 'AI 暂时没有回应。请稍后再试。', detail: String(err.message || err) }));
+  } finally {
+    inFlightReadings.delete(clientId);
   }
 }
 
 // Lightweight pre-flight check — never consumes quota, never calls Ollama.
 function handleQuota(req, res) {
-  const clientId = getClientId(req, res);
+  const clientId = getRateLimitIdentity(req);
   return send(res, 200, JSON.stringify(quotaSnapshot(lastReadingFor(clientId)?.completedAt || 0)));
 }
 
 function handlePreviousReading(req, res) {
-  const clientId = getClientId(req, res);
+  const clientId = getRateLimitIdentity(req);
   const previousReading = lastReadingFor(clientId);
   const quota = quotaSnapshot(previousReading?.completedAt || 0);
   if (!previousReading || !IS_PRODUCTION || !quota.used) {
@@ -404,9 +482,11 @@ const server = http.createServer((req, res) => {
   return send(res, 404, 'Not found', 'text/plain');
 });
 
-server.listen(PORT, () => {
-  console.log(`🌙 小小问题 backend → http://localhost:${PORT}`);
-  console.log(`   Ollama model: ${MODEL}${API_KEY ? '' : '  ⚠ 没有 API key（请检查 .env 里的 OLLAMA_API_KEY）'}`);
-  if (HAS_DIST) console.log(`   Serving built app from dist/ (production)`);
-  else console.log(`   Dev mode: frontend is served by \`npm run dev\` → http://localhost:5173`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  server.listen(PORT, () => {
+    console.log(`🌙 小小问题 backend → http://localhost:${PORT}`);
+    console.log(`   Ollama model: ${MODEL}${API_KEY ? '' : '  ⚠ 没有 API key（请检查 .env 里的 OLLAMA_API_KEY）'}`);
+    if (HAS_DIST) console.log(`   Serving built app from dist/ (production)`);
+    else console.log(`   Dev mode: frontend is served by \`npm run dev\` → http://localhost:5173`);
+  });
+}
