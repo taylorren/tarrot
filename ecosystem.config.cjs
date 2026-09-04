@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'tarrot',
       cwd: '/home/tr/tarrot',
-      script: 'server/server.js',
+      script: 'server/start.js',
       interpreter: 'node',
       env: {
         NODE_ENV: 'production',

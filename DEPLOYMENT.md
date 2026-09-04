@@ -12,7 +12,7 @@ Production deployment of 小小问题 (Tarrot) using the architecture described 
                                          │ 127.0.0.1:8787
                              ┌───────────▼───────────┐
                              │  Node app (pm2)        │
-                             │  server/server.js      │
+                             │  server/start.js       │
                              │  - serves dist/ (prod) │
                              │  - /api/* endpoints    │
                              │  - proxies → Ollama    │
@@ -113,7 +113,7 @@ module.exports = {
     {
       name: 'tarrot',
       cwd: '/opt/tarrot',
-      script: 'server/server.js',
+      script: 'server/start.js',
       interpreter: 'node',
       env: {
         NODE_ENV: 'production',

@@ -8,7 +8,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
-import fs, { realpathSync } from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -524,27 +524,15 @@ export const server = http.createServer((req, res) => {
   return send(res, 404, 'Not found', 'text/plain');
 });
 
-// Determine whether this module is the process entry point (vs. imported by
-// tests). We compare realpaths (not raw paths) so a symlinked project dir —
-// e.g. pm2 launching /home/tr/tarrot/server/server.js where /home/tr/tarrot
-// is a symlink — still matches and actually binds the port.
-function isMainModule() {
-  if (!process.argv[1]) { console.error('[main-check] no argv[1]'); return false; }
-  try {
-    const a = realpathSync(path.resolve(process.argv[1]));
-    const b = realpathSync(fileURLToPath(import.meta.url));
-    const ok = a === b;
-    console.error(`[main-check] argv1=${JSON.stringify(process.argv[1])}\n  realpath(argv1)=${a}\n  realpath(module)=${b}\n  ok=${ok}`);
-    return ok;
-  } catch (e) {
-    console.error('[main-check] error', e.message);
-    return false;
-  }
-}
-
-if (isMainModule()) {
-  server.listen(PORT, () => {
-    console.log(`🌙 小小问题 backend → http://localhost:${PORT}`);
+// Bind the server to the port. Kept as a separate exported function (called
+// from server/start.js) instead of auto-listening at import time, so tests can
+// `import { server }` without starting it. This also sidesteps pm2's fork-mode
+// wrapper: pm2 launches the app via its own ProcessContainerFork.js, so
+// process.argv[1] never points at server.js and can't be used to detect "run
+// as main". A dedicated start.js entry makes that unnecessary.
+export function start(port = PORT) {
+  server.listen(port, () => {
+    console.log(`🌙 小小问题 backend → http://localhost:${port}`);
     console.log(`   Ollama model: ${MODEL}${API_KEY ? '' : '  ⚠ 没有 API key（请检查 .env 里的 OLLAMA_API_KEY）'}`);
     if (HAS_DIST) console.log(`   Serving built app from dist/ (production)`);
     else console.log(`   Dev mode: frontend is served by \`npm run dev\` → http://localhost:5173`);

@@ -12,7 +12,7 @@
     "type-check": "vue-tsc --noEmit",
     "test": "node --test",
     "preview": "vite preview",
-    "server": "node server/server.js",
+    "server": "node server/start.js",
     "start": "npm run dev",
     "prod": "npm run build && NODE_ENV=production npm run server"
   },
